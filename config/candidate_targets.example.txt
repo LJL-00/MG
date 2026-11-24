@@ -1,0 +1,3 @@
+# Synthetic sample IDs; replace with the target IDs from your own manifest.
+example_01
+example_02

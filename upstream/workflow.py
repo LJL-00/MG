@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Run new read QC, assembly, assessment, Snippy filtering and tree analyses.
-
-The supplied server inventory controls new execution versions. Analysis
-parameters follow the study methods.
-"""
+"""Run read QC, assembly, genome assessment, SNP filtering and tree inference."""
 from pathlib import Path
 import argparse,json,re,sys
 from common import BASE,Runner,check_tool,ensure_files,load_manifest,read_config,save_json,sha256
@@ -41,11 +37,30 @@ def trim(runner,rows):
     report=runner.output/'multiqc/multiqc_report.html'
     runner.run('multiqc',runner.tool('MultiQC')+list(map(str,qc_directories))+['-o',str(report.parent)], [report],qc_inputs)
 
+def assembly_kmers(row,config):
+    """Use an explicitly supplied batch override or an explicit fallback list."""
+    override=row.get('batch_kmers','').strip()
+    raw=override.split(',') if override else config.get('spades_kmers')
+    if not isinstance(raw,list) or not raw:
+        raise ValueError('Set batch_kmers in the sample manifest or spades_kmers in the configuration for '+row['sample'])
+    if any(isinstance(value,bool) or not re.fullmatch(r'[0-9]+',str(value).strip()) for value in raw):
+        raise ValueError('SPAdes k-mers must be comma-separated integers for '+row['sample'])
+    try:
+        values=[int(value) for value in raw]
+    except (TypeError,ValueError) as exc:
+        raise ValueError('SPAdes k-mers must be comma-separated integers for '+row['sample']) from exc
+    if values!=sorted(set(values)) or any(value<1 or value>127 or value%2==0 for value in values):
+        raise ValueError('SPAdes k-mers must be distinct increasing odd integers from 1 to 127 for '+row['sample'])
+    return values
+
 def assemble(runner,rows):
     for row in rows:
         if row['assemble']!='1':continue
         sid=row['sample'];r1,r2=paired(runner,sid);folder=runner.output/'assembly'/sid
-        runner.run(sid+'_spades',runner.tool('SPAdes')+['--isolate','-1',str(r1),'-2',str(r2),'-o',str(folder),'-t',str(runner.config['threads']),'-m',str(runner.config['memory_gb']),'-k',','.join(map(str,runner.config['spades_kmers']))],[folder/'contigs.fasta'],[r1,r2],create_output_parents=False)
+        kmers=assembly_kmers(row,runner.config)
+        runner.plan.append({'stage':'assembly_settings','sample':sid,'batch':row.get('batch',''),
+                            'k_mers':kmers,'parameter_source':'manifest batch_kmers' if row.get('batch_kmers','').strip() else 'configuration spades_kmers'})
+        runner.run(sid+'_spades',runner.tool('SPAdes')+['--isolate','-1',str(r1),'-2',str(r2),'-o',str(folder),'-t',str(runner.config['threads']),'-m',str(runner.config['memory_gb']),'-k',','.join(map(str,kmers))],[folder/'contigs.fasta'],[r1,r2],create_output_parents=False)
 
 def assess(runner,rows):
     assemblies=[(r['sample'],runner.output/'assembly'/r['sample']/'contigs.fasta') for r in rows if r['assemble']=='1']
@@ -89,10 +104,10 @@ def tree(runner,rows,args):
     expected=[r['sample'] for r in rows if r['analysis_set']=='Main']
     if len(expected)!=runner.config['expected_main_isolates']:raise ValueError('Tree requires exactly the expected number of enabled Main isolates')
     if runner.dry_run:
-        runner.plan.append({'stage':'tree_input_validation','input':str(alignment),'origin':origin,'requirements':'Expected Main sample IDs, same length, complete ACGT, invariant columns retained; SHA256 will be recorded'})
+        runner.plan.append({'stage':'tree_input_validation','input':str(alignment),'origin':origin,'alignment_policy':args.alignment_policy,'requirements':'Expected Main sample IDs, same length and invariant columns retained; sequence symbols checked under the explicitly selected policy; SHA256 will be recorded'})
     else:
         ensure_files([alignment],'Tree input')
-        report=inspect_tree_alignment(alignment,expected)
+        report=inspect_tree_alignment(alignment,expected,args.alignment_policy)
         save_json(runner.output/'tree/input_audit.json',report|{'origin':origin,'invariant_sites_required':True})
     iqtree=runner.tool('IQ-TREE')
     if args.check_modelfinder:
@@ -107,7 +122,7 @@ def tree(runner,rows,args):
     command=iqtree+['-s',str(alignment),'-st','DNA','-m','GTR+F+R4','-B','1000','-alrt','1000','-T',str(runner.config['threads']),'--prefix',str(prefix)]
     runner.run('tree_inference',command,[prefix.with_suffix('.treefile'),prefix.with_suffix('.iqtree'),prefix.with_suffix('.log')],[alignment])
     if not runner.dry_run:
-        save_json(runner.output/'tree/run_settings.json',{'scope':'new inference using manuscript software and model settings','software':'IQ-TREE 3.1.1','model':'GTR+F+R4','ultrafast_bootstrap':1000,'SH_aLRT':1000,'alignment_origin':origin,'alignment_sha256':sha256(alignment),'modelfinder_BIC_checked':args.check_modelfinder,'rooting':'no outgroup supplied; interpret topology as unrooted','seed':'IQ-TREE default, recorded by IQ-TREE in its log','alignment_type':'full-sites'})
+        save_json(runner.output/'tree/run_settings.json',{'scope':'IQ-TREE inference','software':'IQ-TREE 3.1.1','model':'GTR+F+R4','ultrafast_bootstrap':1000,'SH_aLRT':1000,'alignment_origin':origin,'alignment_policy':args.alignment_policy,'alignment_sha256':sha256(alignment),'modelfinder_BIC_checked':args.check_modelfinder,'rooting':'no outgroup supplied; interpret topology as unrooted','seed':'IQ-TREE default, recorded by IQ-TREE in its log','alignment_type':'full-sites'})
 
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
@@ -115,8 +130,10 @@ def main():
     ap.add_argument('--config',type=Path,default=BASE/'config/upstream.json')
     ap.add_argument('--manifest',type=Path,help='Sample TSV; required except for the versions stage')
     ap.add_argument('--output',type=Path,default=BASE/'results/upstream')
-    ap.add_argument('--alignment',help='Confirmed full-sites tree alignment, with all Main sample IDs and invariant columns')
-    ap.add_argument('--new-tree-from-core',action='store_true',help='Explicitly generate a new inference from the strict core including invariant sites; includes invariant columns')
+    tree_inputs=ap.add_mutually_exclusive_group()
+    tree_inputs.add_argument('--alignment',help='Confirmed full-sites tree alignment, with all Main sample IDs and invariant columns')
+    tree_inputs.add_argument('--new-tree-from-core',action='store_true',help='Explicitly generate a new inference from the strict core including invariant sites')
+    ap.add_argument('--alignment-policy',choices=['complete-case','gapped-reference'],default='complete-case',help='Select complete ACGT or explicitly retain gaps and ambiguity codes in a supplied full-sites alignment')
     ap.add_argument('--check-modelfinder',action='store_true',help='Run ModelFinder/BIC first and require GTR+F+R4 before final tree inference')
     ap.add_argument('--dry-run',action='store_true',help='Write commands without executing tools or claiming that versions/results were verified')
     ap.add_argument('--allow-missing-tools',action='store_true',help='For versions inventory only; report unavailable tools without failing')

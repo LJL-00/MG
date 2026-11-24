@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small synthetic checks for new entry points, separate from study-data replays."""
+"""Synthetic checks for QC, assembly, SNP and tree workflows."""
 from pathlib import Path
 import copy,csv,json,subprocess,sys,tempfile,unittest
 import numpy as np
@@ -76,12 +76,12 @@ class UpstreamTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'ACGT'):inspect_tree_alignment(invalid,self.ids)
 
     def test_version_match_and_mismatch(self):
-        cfg={'tools':{'FastQC':{'command':[sys.executable,'-c',"print('FastQC v0.12.1')"],'version_args':[],'version_regex':r'FastQC\s+v?([\d.]+)','required_version':'0.12.1','version_source':'server inventory','manuscript_version':'0.11.9'}}}
+        cfg={'tools':{'FastQC':{'command':[sys.executable,'-c',"print('FastQC v0.12.1')"],'version_args':[],'version_regex':r'FastQC\s+v?([\d.]+)','required_version':'0.12.1'}}}
         self.assertEqual(check_tool(cfg,'FastQC')['status'],'MATCH')
         cfg['tools']['FastQC']['required_version']='0.11.9'
         with self.assertRaisesRegex(RuntimeError,'configuration requires'):check_tool(cfg,'FastQC')
 
-    def test_server_versions_reject_previous_executables(self):
+    def test_configured_versions_reject_other_executables(self):
         cfg=json.loads((BASE/'config/upstream.json').read_text(encoding='utf-8'))
         previous={'Trimmomatic':('0.39','0.39'),'SPAdes':('SPAdes v3.15.5','3.15.5'),'BUSCO':('BUSCO 5.2.2','5.2.2'),'Bowtie2':('bowtie2-align-s version 2.5.2','2.5.2'),'SAMtools':('samtools 1.17','1.17')}
         for name,(output,_) in previous.items():
@@ -89,14 +89,14 @@ class UpstreamTests(unittest.TestCase):
             with self.subTest(software=name),self.assertRaisesRegex(RuntimeError,'configuration requires'):check_tool(cfg,name)
 
     def test_snippy_dependency_failure_stops_before_analysis(self):
-        cfg={'tools':{'Snippy':{'command':[sys.executable,'-c',"import sys; print('snippy 4.6.0'); sys.exit(1 if '--check' in sys.argv else 0)"],'version_args':[],'version_regex':r'snippy\s+([\d.]+)','required_version':'4.6.0','version_source':'server inventory','preflight_args':['--check']}}}
+        cfg={'tools':{'Snippy':{'command':[sys.executable,'-c',"import sys; print('snippy 4.6.0'); sys.exit(1 if '--check' in sys.argv else 0)"],'version_args':[],'version_regex':r'snippy\s+([\d.]+)','required_version':'4.6.0','preflight_args':['--check']}}}
         with self.assertRaisesRegex(RuntimeError,'dependency preflight failed'):check_tool(cfg,'Snippy')
 
     def test_changed_version_does_not_reuse_previous_outputs(self):
         version=self.root/'version.txt';version.write_text('1.0')
         tool=self.root/'changing_tool.py'
         tool.write_text("from pathlib import Path\nimport sys\nv=Path(sys.argv[1]).read_text()\nif '--version' in sys.argv:print('Mock '+v)\nelse:Path(sys.argv[-1]).write_text(v)\n",encoding='utf-8')
-        cfg={'tools':{'Mock':{'command':[sys.executable,str(tool),str(version)],'version_args':['--version'],'version_regex':r'Mock\s+([\d.]+)','required_version':'1.0','version_source':'test'}}}
+        cfg={'tools':{'Mock':{'command':[sys.executable,str(tool),str(version)],'version_args':['--version'],'version_regex':r'Mock\s+([\d.]+)','required_version':'1.0'}}}
         out=self.root/'new_outputs';product=out/'product.txt'
         first=Runner(out,cfg);first.run('mock',first.tool('Mock')+[str(product)],[product])
         self.assertEqual(product.read_text(),'1.0')
@@ -115,6 +115,7 @@ class UpstreamTests(unittest.TestCase):
     def test_cli_plan_and_explicit_tree_choice(self):
         cfg=json.loads((BASE/'config/upstream.json').read_text(encoding='utf-8'))
         cfg['expected_main_isolates']=3;cfg['reference_fasta']=str(self.ref);cfg['adapters_fasta']=str(self.ref)
+        cfg['spades_kmers']=[21,33,55,77]
         config=self.root/'config.json';config.write_text(json.dumps(cfg),encoding='utf-8')
         command=[sys.executable,str(BASE/'upstream/workflow.py'),'all','--config',str(config),'--manifest',str(self.manifest),'--output',str(self.root/'planned'),'--dry-run']
         result=subprocess.run(command,capture_output=True,text=True);self.assertEqual(result.returncode,2);self.assertIn('explicitly',result.stderr)

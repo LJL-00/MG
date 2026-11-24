@@ -109,14 +109,18 @@ def build_core(manifest,reference_path,snippy_root,output,expected_samples=56):
     save_json(output/'core_report.json',report)
     return report
 
-def inspect_tree_alignment(path,expected_ids):
+def inspect_tree_alignment(path,expected_ids,policy='complete-case'):
     seqs=read_fasta(path)
     if set(seqs)!=set(expected_ids):raise ValueError('Tree alignment IDs must exactly equal the enabled Main isolates')
     lengths={len(s) for s in seqs.values()}
     if len(lengths)!=1:raise ValueError('Tree sequences must have the same length')
     array=np.stack([np.frombuffer(s,dtype=np.uint8) for s in seqs.values()])
-    if not np.all(LUT[array]):raise ValueError('Tree input must be complete-case uppercase ACGT; found gaps or ambiguous bases')
-    variable=np.any(array!=array[0],axis=0);constant=int((~variable).sum())
+    if policy not in ['complete-case','gapped-reference']:raise ValueError('Unknown tree alignment policy')
+    complete=np.all(LUT[array],axis=0)
+    if policy=='complete-case' and not np.all(complete):raise ValueError('Tree input must be complete-case uppercase ACGT; found gaps or ambiguous bases')
+    if policy=='gapped-reference' and not set(array.tobytes())<=set(b'ACGTRYSWKMBDHVNn-?'):
+        raise ValueError('Gapped-reference tree input must contain uppercase IUPAC DNA, N/n, gaps or question marks')
+    variable=complete&np.any(array!=array[0],axis=0);constant=int((complete&~variable).sum())
     if not constant:raise ValueError('SNP-only input has no invariant sites. GTR+F+R4 without ascertainment correction is not accepted here. Supply a full-sites ACGT alignment.')
-    return {'file':str(Path(path).resolve()),'sha256':sha256(path),'samples':len(seqs),'length':len(array[0]),'variable_sites':int(variable.sum()),'constant_sites':constant,'ids':list(seqs)}
+    return {'file':str(Path(path).resolve()),'sha256':sha256(path),'samples':len(seqs),'length':len(array[0]),'alignment_policy':policy,'complete_ACGT_sites':int(complete.sum()),'columns_with_gaps_or_ambiguities':int((~complete).sum()),'variable_sites':int(variable.sum()),'constant_sites':constant,'site_count_definition':'Variable and invariant counts refer to complete ACGT columns; all supplied columns remain in the tree input.','ids':list(seqs)}
 

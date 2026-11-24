@@ -226,7 +226,16 @@ def process_unit(meta, genes, index, prefix, output, threads, keep_bam, tools):
     return unit
 
 
-def write_matrices(output, genes, metadata):
+def expression_genes(genes, biotype='protein_coding'):
+    selected=sorted(gene for gene, data in genes.items()
+                    if biotype=='all' or data.get('biotype','')==biotype)
+    if not selected:
+        raise ValueError('No genes have the requested expression biotype '+biotype+
+                         '; check gene_biotype attributes in the reference GFF')
+    return selected
+
+
+def write_matrices(output, genes, metadata, expression_biotype='protein_coding'):
     matrices, qcs = {}, []
     units = [row['unit'] for row in metadata]
     for unit in units:
@@ -234,15 +243,28 @@ def write_matrices(output, genes, metadata):
         with (output/unit/'counts.csv').open() as handle:
             matrices[unit] = {row['Gene_ID']: int(row['count_strand2']) for row in csv.DictReader(handle)}
         qcs.append(json.loads((output/unit/'QC.json').read_text()))
-    totals = {unit: sum(matrices[unit].values()) for unit in units}
-    # Write one column per selected library.
+    selected=expression_genes(genes,expression_biotype)
+    totals = {unit: sum(matrices[unit].get(gene,0) for gene in selected) for unit in units}
+    # Assignment used all annotation genes. Biotype selection affects expression
+    # output and its denominator only, never the earlier overlap decision.
+    with (output/'all_gene_counts.csv').open('w', newline='') as handle:
+        writer=csv.writer(handle)
+        writer.writerow(['Gene_ID']+units)
+        writer.writerows([gene]+[matrices[unit].get(gene,0) for unit in units]
+                         for gene in sorted(genes))
     for filename, cpm in [('counts.csv', False), ('CPM.csv', True)]:
         with (output/filename).open('w', newline='') as handle:
             writer = csv.writer(handle)
             writer.writerow(['Gene_ID']+units)
-            for gene in sorted(genes):
+            for gene in selected:
                 writer.writerow([gene]+[(matrices[unit].get(gene, 0)*1e6/totals[unit] if totals[unit] else 0)
                                        if cpm else matrices[unit].get(gene, 0) for unit in units])
+    for qc in qcs:
+        unit=qc['unit']
+        qc['expression_biotype']=expression_biotype
+        qc['expression_genes']=len(selected)
+        qc['expression_assigned_fragments']=totals[unit]
+        qc['all_gene_assigned_fragments']=sum(matrices[unit].get(gene,0) for gene in genes)
     with (output/'QC_units.csv').open('w', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=list(dict.fromkeys(key for qc in qcs for key in qc)))
         writer.writeheader()
@@ -260,6 +282,8 @@ def main(argv=None):
     parser.add_argument('--workers', type=int, default=3)
     parser.add_argument('--limit', type=int, help='Optional number of first libraries to process; default all manifest rows')
     parser.add_argument('--keep-bam', action='store_true')
+    parser.add_argument('--expression-biotype', default='protein_coding',
+                        help='gene_biotype selected after all-gene assignment; use all to retain all annotated genes')
     args = parser.parse_args(argv)
     if args.threads < 1 or args.workers < 1 or (args.limit is not None and args.limit < 1):
         raise ValueError('threads, workers and limit must be positive')
@@ -273,6 +297,7 @@ def main(argv=None):
     versions = {name: check_tool(config, name) for name in needed}
     tools = {name: executable(config, name) for name in needed}
     genes, index = annotation(args.reference_gff)
+    selected_expression_genes=expression_genes(genes,args.expression_biotype)
     output.mkdir(parents=True, exist_ok=True)
     save_json(output/'logs/software_versions.json', versions)
     save_json(output/'selected_units.json', metadata)
@@ -293,6 +318,10 @@ def main(argv=None):
         'units': len(metadata), 'threads_per_worker': args.threads, 'workers': args.workers,
         'aligner_parameters': '--very-sensitive --reorder; end-to-end paired alignment',
         'primary_count_strand': 2, 'count_definition': __doc__,
+        'assignment_annotation_scope':'All annotated genes participate in overlap and ambiguity decisions.',
+        'expression_biotype':args.expression_biotype,
+        'expression_gene_count':len(selected_expression_genes),
+        'expression_CPM_denominator':'Sum of counts across selected expression-biotype genes per library.',
         'library_strandedness_confirmed_by_provider': False, 'original_platform_DESeq2_reproduction': False}
     save_json(output/'run_parameters.json', parameters)
     prefix = output/'reference/genome'
@@ -319,7 +348,7 @@ def main(argv=None):
         if errors:
             save_json(output/'failed_units.json', errors)
             raise RuntimeError('Failed units: '+json.dumps(errors))
-    write_matrices(output, genes, metadata)
+    write_matrices(output, genes, metadata,args.expression_biotype)
     save_json(output/'completed.json', {'status': 'COMPLETE', 'units': len(metadata), 'scope': parameters['scope']})
     print(json.dumps({'output': str(output), 'units': len(metadata), 'status': 'COMPLETE'}))
 

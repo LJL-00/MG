@@ -1,0 +1,4 @@
+sample	annotated_vcf	filtered_vcf	vcf_sample
+example_01	../inputs/example_01.annotated.vcf.gz	../inputs/example_01.filtered.vcf.gz	example_01
+example_02	../inputs/example_02.annotated.vcf.gz	../inputs/example_02.filtered.vcf.gz	example_02
+example_03	../inputs/example_03.annotated.vcf.gz	../inputs/example_03.filtered.vcf.gz	example_03

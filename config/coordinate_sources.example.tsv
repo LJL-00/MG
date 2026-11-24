@@ -1,0 +1,6 @@
+sample	role	input_kind	source_path	tree_include
+reference_example	reference	reference		0
+example_01	main	gapped_fasta	../coordinate_fastas/example_01.fasta	1
+example_02	main	snippy_aligned	../snippy/example_02	1
+assessment_example	assessment	gapped_fasta	../coordinate_fastas/assessment_example.fasta	0
+control_example	external_control	gapped_fasta	../coordinate_fastas/control_example.fasta	0

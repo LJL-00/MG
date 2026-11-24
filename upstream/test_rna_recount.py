@@ -14,7 +14,7 @@ class RNARecountTests(unittest.TestCase):
         self.fasta = self.root/'reference.fa'
         self.fasta.write_text('>chr1\n'+'A'*100+'\n')
         self.gff = self.root/'reference.gff'
-        self.gff.write_text('chr1\ttest\tgene\t1\t100\t.\t+\t.\tID=g1\n'
+        self.gff.write_text('chr1\ttest\tgene\t1\t100\t.\t+\t.\tID=g1;gene_biotype=protein_coding\n'
                             'chr1\ttest\tmRNA\t1\t100\t.\t+\t.\tID=t1;Parent=g1\n'
                             'chr1\ttest\texon\t1\t100\t.\t+\t.\tParent=t1\n')
 
@@ -44,6 +44,49 @@ class RNARecountTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'different mate record counts'):
             recount.sample_pair(one, two, self.root/'a.fq', self.root/'b.fq')
 
+    def test_expression_biotype_is_selected_after_all_gene_assignment(self):
+        self.gff.write_text(
+            'chr1\ttest\tgene\t1\t20\t.\t+\t.\tID=pc1;gene_biotype=protein_coding\n'
+            'chr1\ttest\tmRNA\t1\t20\t.\t+\t.\tID=m1;Parent=pc1\n'
+            'chr1\ttest\texon\t1\t20\t.\t+\t.\tParent=m1\n'
+            'chr1\ttest\tgene\t1\t40\t.\t+\t.\tID=trna1;gene_biotype=tRNA\n'
+            'chr1\ttest\ttRNA\t1\t40\t.\t+\t.\tID=t1;Parent=trna1\n'
+            'chr1\ttest\texon\t1\t40\t.\t+\t.\tParent=t1\n'
+            'chr1\ttest\tgene\t50\t80\t.\t+\t.\tID=pc2;gene_biotype=protein_coding\n'
+            'chr1\ttest\tmRNA\t50\t80\t.\t+\t.\tID=m2;Parent=pc2\n'
+            'chr1\ttest\texon\t50\t80\t.\t+\t.\tParent=m2\n')
+        genes,index=recount.annotation(self.gff)
+        sam=self.root/'biotypes.sam'
+        with sam.open('w') as handle:
+            for name,pos in [('overlap',1),('trna_only',30),('coding_only',50)]:
+                for flag in [83,163]:
+                    handle.write(f'{name}\t{flag}\tchr1\t{pos}\t20\t4M\t=\t90\t0\tAAAA\tIIII\n')
+        counts,qc=recount.count_sam(sam,genes,index)
+        self.assertEqual(counts[2]['pc1'],0)
+        self.assertEqual(counts[2]['pc2'],1)
+        self.assertEqual(counts[2]['trna1'],1)
+        self.assertEqual(qc['ambiguous_strand2'],1)
+        unit=self.root/'unit1';unit.mkdir()
+        (unit/'completed.json').write_text('{"status":"COMPLETE"}')
+        (unit/'QC.json').write_text(json.dumps({'unit':'unit1',**qc}))
+        with (unit/'counts.csv').open('w',newline='') as handle:
+            writer=csv.writer(handle)
+            writer.writerow(['Gene_ID','count_strand0','count_strand1','count_strand2'])
+            writer.writerows([gene,counts[0][gene],counts[1][gene],counts[2][gene]] for gene in genes)
+        recount.write_matrices(self.root,genes,[{'unit':'unit1'}])
+        with (self.root/'counts.csv').open() as handle:
+            primary={row['Gene_ID']:int(row['unit1']) for row in csv.DictReader(handle)}
+        self.assertEqual(primary,{'pc1':0,'pc2':1})
+        with (self.root/'CPM.csv').open() as handle:
+            cpm={row['Gene_ID']:float(row['unit1']) for row in csv.DictReader(handle)}
+        self.assertEqual(cpm['pc2'],1000000.0)
+        with (self.root/'all_gene_counts.csv').open() as handle:
+            self.assertEqual(len(list(csv.DictReader(handle))),3)
+        recount.write_matrices(self.root,genes,[{'unit':'unit1'}],'all')
+        with (self.root/'CPM.csv').open() as handle:
+            cpm={row['Gene_ID']:float(row['unit1']) for row in csv.DictReader(handle)}
+        self.assertEqual(cpm['pc2'],500000.0)
+
     def test_mock_execution_checks_all_selected_tools(self):
         tool = self.root/'mock.py'
         tool.write_text("""from pathlib import Path
@@ -61,7 +104,7 @@ elif name=='SAMtools':
         config = {'tools': {name: {'command': [sys.executable, str(tool), name],
                                   'version_args': ['--version'],
                                   'version_regex': r'(\d+\.\d+(?:\.\d+)?)',
-                                  'required_version': version, 'version_source': 'synthetic server target'}
+                                  'required_version': version}
                              for name, version in [('Bowtie2', '2.5.4'), ('Bowtie2-build', '2.5.4'),
                                                    ('SAMtools', '1.23.1')]}}
         config_path = self.root/'config.json'

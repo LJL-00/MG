@@ -58,13 +58,12 @@ def check_tool(config,name):
     found=re.search(spec['version_regex'],output,re.I)
     if not found:raise RuntimeError(f'{name}: version was not found in output: {output[:1000]}')
     version=found.group(1).rstrip('.')
-    required=spec.get('required_version',spec.get('manuscript_version'))
-    source=spec.get('version_source','legacy configuration')
+    required=spec.get('required_version')
     if required and version!=required:
-        raise RuntimeError(f'{name}: configuration requires {required} from {source}, executable reports {version}. Select the matching executable in config/upstream.json.')
+        raise RuntimeError(f'{name}: configuration requires {required}, executable reports {version}. Select the matching executable in config/upstream.json.')
     if result.returncode and not spec.get('version_nonzero_ok',False):
         raise RuntimeError(f'{name}: version command failed with exit {result.returncode}: {output[:1000]}')
-    report={'software':name,'required_version':required,'version_source':source,'server_inventory_version':spec.get('server_inventory_version'),'manuscript_version':spec.get('manuscript_version'),'detected_version':version,'command':command,'output':output,'status':'MATCH' if required else 'RECORDED_WITHOUT_VERSION_TARGET'}
+    report={'software':name,'required_version':required,'detected_version':version,'command':command,'output':output,'status':'MATCH' if required else 'RECORDED_WITHOUT_VERSION_TARGET'}
     if spec.get('preflight_args'):
         preflight=spec['command']+spec['preflight_args']
         try:
@@ -73,7 +72,7 @@ def check_tool(config,name):
             raise RuntimeError(f'{name}: dependency preflight could not run: {exc}') from exc
         report['dependency_check']={'command':preflight,'exit_code':result.returncode,'output':result.stdout}
         if result.returncode:
-            raise RuntimeError(f'{name}: dependency preflight failed. Snippy 4.6.0 requires BCFtools at least 1.7; the inventory lists standalone BCFtools 1.3. Select a compatible Snippy environment and record its dependencies. Output: {result.stdout[:2000]}')
+            raise RuntimeError(f'{name}: dependency preflight failed. Snippy requires BCFtools at least 1.7. Activate its compatible environment. Output: {result.stdout[:2000]}')
     return report
 
 def ensure_files(paths,context):

@@ -1,0 +1,6 @@
+name: mg-protein-search
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - blast=2.17.0

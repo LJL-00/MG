@@ -5,11 +5,12 @@ Analysis code for the Meyerozyma guilliermondii species complex study.
 ## Contents
 
 - `upstream/` runs read QC, trimming, assembly, genome assessment, variant calling, strict core filtering, tree inference, ANI, STRUCTURE and local RNA read counting.
-- `scripts/` calculates SNP distances, summarizes population structure, ANI and MICs, and performs isolate-level RNA PCA, RMS distance and gene-set analysis.
+- `scripts/` calculates SNP distances, summarizes population structure, ANI and MICs, compares candidate alleles and coding sequences, builds protein-based gene panels, and performs isolate-level RNA PCA, RMS distance and gene-set analysis.
+- `plots/` draws integrated genomic panels, ANI heatmaps, RNA panels and supplementary matrix plots from external inputs.
 - `config/` contains parameters and synthetic input examples.
 - `environments/` contains separate Conda environments for the external tools.
 
-Supply analysis inputs using the command-line options below. The examples and tests use synthetic sample names and values. Experimental data, result tables, manuscript files and figure files are not included.
+Use the command-line options below to supply the analysis inputs. Input formats are described in [docs/INPUTS.md](docs/INPUTS.md). The configuration examples use synthetic sample names.
 
 ## Requirements
 
@@ -19,7 +20,7 @@ Use Python 3.12 and install the Python dependencies from the repository root.
 python -m pip install -r requirements.txt
 ```
 
-External tools run on Linux or WSL. The execution targets below follow the author-supplied server inventory where available.
+External tools run on Linux or WSL. Use the following software versions.
 
 | Tool | Execution version |
 | --- | --- |
@@ -37,10 +38,9 @@ External tools run on Linux or WSL. The execution targets below follow the autho
 | FreeBayes in the Snippy environment | 1.3.6 |
 | FastANI | 1.34 |
 | STRUCTURE | 2.3.4 |
+| BLASTP and makeblastdb | 2.17.0 |
 
-FastANI and STRUCTURE versions come from study records. They are absent from the supplied server inventory. These targets should be checked in the intended execution environment. The original reported analyses used BUSCO 5.2.2 and Bowtie2 2.5.2. Changing execution targets does not regenerate those analyses.
-
-Snippy 4.6.0 requires BCFtools at least 1.7. The server's standalone BCFtools 1.3 cannot satisfy this requirement. Use the separate Snippy environment and run `snippy --check`. The scripts check configured executable versions before execution and save the checks with each new run.
+Snippy requires BCFtools at least 1.7. Use its separate environment and run `snippy --check` before variant calling. Each workflow checks executable versions and saves the versions and commands with its outputs.
 
 Create the environments needed for your analysis, for example:
 
@@ -53,7 +53,7 @@ conda env create -f environments/snippy.yml
 conda env create -f environments/iqtree.yml
 ```
 
-Activate the appropriate environment for each stage, or set command arrays in `config/upstream.json`, for example `["conda", "run", "-n", "mg-snippy", "snippy"]`. The Conda environments and full external-tool runs have not been validated on this Windows packaging host.
+Activate the appropriate environment for each stage, or set command arrays in `config/upstream.json`, for example `["conda", "run", "-n", "mg-snippy", "snippy"]`.
 
 ## Inputs and execution order
 
@@ -61,7 +61,7 @@ Use paths to your own inputs. All output paths below are examples. Each script a
 
 ### 1. QC, assembly, SNPs and phylogeny
 
-Copy `config/samples.example.tsv` to an input directory and fill its paired FASTQ paths. The `sample` column must be unique. `assemble=1` selects samples for assembly; `analysis_set=Main` selects the core SNP cohort. Set the reference FASTA, paired-end adapter FASTA, thread count, memory and expected core cohort size in `config/upstream.json`. Relative FASTQ paths are resolved from the manifest directory.
+Copy `config/samples.example.tsv` to an input directory and fill its paired FASTQ paths. The `sample` column must be unique. `assemble=1` selects samples for assembly; `analysis_set=Main` selects the core SNP cohort. Set the reference FASTA, paired-end adapter FASTA, thread count, memory and expected core cohort size in `config/upstream.json`. The default SPAdes k-mer list is 21,33,55,77,99. Optional `batch` and `batch_kmers` columns support a separate k-mer list for each batch. Relative FASTQ paths are resolved from the manifest directory.
 
 Use the reference assembly GCF_000149425.1 and its matching annotation for the study analysis. A Snippy GenBank reference, if used, must have the same contig identifiers and sequences as the reference FASTA. BUSCO uses `fungi_odb10`; provide the exact local lineage dataset to match a saved database release.
 
@@ -72,14 +72,14 @@ python upstream/workflow.py assemble --manifest inputs/samples.tsv --output runs
 python upstream/workflow.py assess --manifest inputs/samples.tsv --output runs/wgs
 python upstream/workflow.py snippy --manifest inputs/samples.tsv --output runs/wgs
 python upstream/workflow.py core --manifest inputs/samples.tsv --output runs/wgs
-python upstream/workflow.py tree --manifest inputs/samples.tsv --output runs/wgs --new-tree-from-core
+python upstream/workflow.py tree --manifest inputs/samples.tsv --output runs/tree --alignment inputs/confirmed_full_sites_alignment.fasta.gz --alignment-policy gapped-reference --check-modelfinder
 ```
 
-Trimming uses ILLUMINACLIP 2:30:10, LEADING 20, TRAILING 20, SLIDINGWINDOW 4:20 and MINLEN 50. SPAdes uses `--isolate` with k-mers 21,33,55,77 by default; set the k-mer list for the relevant sequencing batch in the configuration. QUAST uses a 500-bp minimum contig length.
+Trimming uses ILLUMINACLIP 2:30:10, LEADING 20, TRAILING 20, SLIDINGWINDOW 4:20 and MINLEN 50. SPAdes uses `--isolate` and k-mers 21,33,55,77,99 by default. A nonempty `batch_kmers` value overrides this list for that row. QUAST uses a 500-bp minimum contig length.
 
-SNP filtering retains QUAL at least 100, depth at least 10 and alternate-allele fraction at least 0.90. Indels and 10 bp on either side are masked. Multi-nucleotide substitutions are split into single-base differences. Core construction requires a callable base in every included sample. Pairwise distances count mismatches at the same retained sites.
+SNP filtering retains QUAL at least 100, depth at least 10 and alternate-allele fraction AO/DP at least 0.90. It also requires a single ALT allele, FILTER equal to PASS or an unset filter, and the selected ALT consensus genotype. Indels and 10 bp on either side are masked. Multi-nucleotide substitutions are split into single-base differences. Core construction requires a callable base in every included sample. Pairwise distances count mismatches at the same retained sites.
 
-IQ-TREE uses GTR+F+R4 with 1,000 ultrafast bootstrap and 1,000 SH-aLRT replicates. Tree inference requires a full-sites alignment with invariant sites retained. A SNP-only alignment is rejected. Use `--alignment` to select an independently confirmed full-sites alignment, or `--new-tree-from-core` to use the newly constructed core. Add `--check-modelfinder` to check the BIC-selected model before inference. Re-running the pipeline generates a new tree.
+IQ-TREE uses GTR+F+R4 with 1,000 ultrafast bootstrap and 1,000 SH-aLRT replicates. Tree inference requires a full-sites alignment with invariant sites retained. A SNP-only alignment is rejected. Use `--alignment` with `--alignment-policy gapped-reference` for a confirmed reference-coordinate alignment containing missing bases or gaps. Use `complete-case` for an all-callable alignment. `--new-tree-from-core` explicitly selects the newly constructed strict core. The two inputs are mutually exclusive. `--check-modelfinder` runs ModelFinder and checks the BIC-selected model before the final inference. The command above includes this step. The input alignment checksum and IQ-TREE settings are saved in the output directory.
 
 To calculate distances from a complete SNP alignment:
 
@@ -89,11 +89,12 @@ python scripts/01_snp_distances.py --alignment inputs/snps.fasta.gz --output run
 
 ### 2. ANI
 
-Provide a tab-separated manifest with `sample` and `fasta` columns and one real assembly path per sample. See `config/assemblies.example.tsv`. FastANI uses a fragment length of 3,000 and minimum fraction of 0.2. The symmetric ANI is the mean of both directional estimates when both are available. Missing estimates stay missing.
+For the reference-coordinate ANI analysis, first prepare the exact gapped consensus inputs with `upstream/prepare_coordinate_inputs.py` using `config/coordinate_sources.example.tsv` as the manifest template. Sources may be supplied reference-coordinate FASTAs or Snippy `snps.aligned.fa` files with matching contig identifiers and lengths. Missing bases and gaps are preserved. Include all assessment sequences, the reference and the external control in the manifest. Supply the confirmed full source set rather than only the newly assembled study genomes. The script writes a `sample,fasta` ANI manifest and input hashes. De novo contigs are a different sequence representation and do not replace the reference-coordinate inputs. FastANI uses a fragment length of 3,000 and minimum fraction of 0.2. The symmetric ANI is the mean of both directional estimates. The current summary script requires both directions for every matrix entry and stops on missing estimates; it never fills a missing comparison with a reference value.
 
 ```sh
-python upstream/run_fastani.py --manifest inputs/assemblies.tsv --output runs/ani
-python scripts/03_ani_summary.py --directional inputs/directional_ani.csv --output runs/symmetric_ani.csv
+python upstream/prepare_coordinate_inputs.py --manifest inputs/coordinate_sources.tsv --reference-fasta inputs/reference.fasta --output runs/coordinate_inputs --require-external-control --expected-ani-samples 63
+python upstream/run_fastani.py --manifest runs/coordinate_inputs/ani_inputs.tsv --output runs/ani
+python scripts/03_ani_summary.py --directional runs/ani/directional_ani.csv --output runs/symmetric_ani.csv
 ```
 
 The directional CSV contains `Query,Reference,FastANI_percent,Matched_fragments,Query_fragments`; `Matched_fraction_query` is optional.
@@ -120,18 +121,44 @@ The MIC CSV contains `isolate,analysis_set,AB,AND,MF,CAS,FC,PZ,VOR,IZ,FZ`; `clad
 
 The configured study interpretation uses ECVs of 8 for fluconazole, 2 for itraconazole and 0.5 for posaconazole. NWT requires MIC above its ECV; joint NWT requires all three. Voriconazole, amphotericin B and flucytosine have MIC summaries without a WT/NWT classification. Anidulafungin and micafungin use S at most 2, I equal to 4 and R at least 8. The same numerical caspofungin comparison is reported separately. These rules implement the manuscript analysis.
 
-### 5. RNA counting, PCA and RMS
+### 5. Candidate alleles and coding-sequence comparisons
 
-`upstream/rna_recount.py` takes a manifest with `unit,isolate,source_group,temperature_C,read1,read2`, a reference FASTA and its matching GFF3. It uses the first one million paired reads per library. A counted fragment has a primary, proper R1 alignment, MAPQ at least 20 and overlap with exactly one annotated gene. The primary counting mode uses R1 opposite the annotated gene. Library strandedness must be confirmed with the provider before extending this analysis.
+The manifests and gene lists are external inputs. Use the sample groups, baseline and selected genes specified in the manuscript and supplementary tables. Keep canonical IDs consistent across VCFs, reference-coordinate FASTAs and figures; an optional alias table maps filename identifiers to canonical IDs.
+
+```sh
+python scripts/07_candidate_alleles.py --manifest inputs/variant_samples.tsv --targets inputs/target_samples.txt --impacts HIGH MODERATE --output runs/candidates
+python scripts/09_protein_panel.py --hits inputs/protein_hits.tsv --gff inputs/reference.gff.gz --manual-genes inputs/manual_genes.tsv --shared-genes runs/candidates/candidates_gene_list.tsv --output runs/gene_panel
+python scripts/08_cds_compare.py --manifest inputs/coding_samples.tsv --gff inputs/reference.gff.gz --genes runs/gene_panel/all_genes.tsv --baseline BASELINE_ID --hotspots inputs/hotspots.tsv --output runs/coding
+```
+
+`07_candidate_alleles.py` screens exact CHROM/POS/REF/ALT keys present in every target's annotated VCF and absent as records from other annotated VCFs. It parses coding consequences from ANN or CSQ annotations and separately checks retention in each supplied filtered VCF. Record absence is not called a WT genotype or a callable reference site. `--gene-map` maps annotation identifiers to the gene catalogue when necessary. No allele normalization is performed silently.
+
+`09_protein_panel.py` summarizes tabular protein-search output. The required columns are `qseqid,sseqid,pident,length,evalue,bitscore`. It uses all supplied hits by default; optional E-value and identity filters can restrict this set. Best hits are ranked by descending bit score, identity and alignment length, with input-row order resolving exact ties. Protein similarity and NCBI gene annotation remain separate. The focal panel combines best-hit genes and externally supplied manual genes. The extended panel combines all hit genes and the manual list. The union adds the externally supplied shared-candidate genes. Counts follow the input lists rather than hardcoded study totals.
+
+Run the protein search with BLAST+ 2.17.0:
+
+```sh
+python upstream/run_protein_search.py --queries inputs/queries.faa --proteins inputs/reference_proteins.faa --output runs/protein_search
+```
+
+The defaults are E-value 1e-5, SEG masking enabled and four threads. `--evalue`, `--seg`, `--threads`, `--max-hsps` and `--max-target-seqs` can change these settings. By default, the target limit is the number of proteins in the reference database. The output includes commands, sequence hashes, software versions and `hits.tsv`, which can be supplied to `09_protein_panel.py`.
+
+`08_cds_compare.py` reads GFF3 CDS segments and joins them in transcription order, including reverse complementation and CDS phase validation. Only the first partial CDS phase removes leading bases; phases at subsequent segments are checked while codons can span exon boundaries. Translation table 12 maps CTG to serine. Only complete A/C/G/T codons callable in both the baseline and compared sample enter a comparison. Multiple substitutions within one codon are translated together. Indels from supplied VCFs and internal stops are listed separately. Fixed reference-coordinate FASTAs do not reconstruct sample-specific insertions. Multi-transcript genes require explicit transcript IDs by default. Hotspot intervals use an external table and are not guessed by the program.
+
+Input column definitions and small synthetic manifest examples are in [docs/INPUTS.md](docs/INPUTS.md).
+
+### 6. RNA counting, PCA and RMS
+
+`upstream/rna_recount.py` takes a manifest with `unit,isolate,source_group,temperature_C,read1,read2`, a reference FASTA and its matching GFF3. It uses the first one million paired reads per library. A counted fragment has a primary, proper R1 alignment, MAPQ at least 20 and overlap with exactly one annotated gene. The primary counting mode uses R1 opposite the annotated gene. This is the reverse-stranded counting mode.
 
 ```sh
 python upstream/rna_recount.py --help
 python scripts/05_rna_pca_rms.py --counts inputs/counts.csv --metadata inputs/rna_metadata.csv --output runs/rna
 ```
 
-The count matrix has a gene identifier column followed by library columns. Metadata columns are `Original_library,Strain`, with one row per library. Counts must be nonnegative. CPM uses the sum of included gene counts in each library. PCA averages `log2(CPM+1)` across libraries within each isolate, selects the 500 genes with highest variance, centers genes without variance scaling and applies SVD. Coordinates use scores divided by the square root of the selected gene count minus one. PCA axis signs are arbitrary. RMS uses the same selected genes.
+Counting uses all annotated genes for overlap and ambiguity decisions. After counting, `--expression-biotype protein_coding` selects protein-coding genes for `counts.csv` and `CPM.csv`; `all_gene_counts.csv` retains every counted gene. Filtering before counting would change overlap decisions. The count matrix has a gene identifier column followed by library columns. Metadata can use `Original_library,Strain` or the RNA manifest columns `unit,isolate`, with one row per library. Counts must be nonnegative. CPM uses the sum of included gene counts in each library. PCA averages `log2(CPM+1)` across libraries within each isolate, selects the 500 genes with highest variance, centers genes without variance scaling and applies SVD. Coordinates use scores divided by the square root of the selected gene count minus one. PCA axis signs are arbitrary. RMS uses the same selected genes.
 
-### 6. Gene sets
+### 7. Gene sets
 
 ```sh
 python scripts/06_gene_sets.py --expression inputs/tpm.csv --membership inputs/membership.csv --groups inputs/groups.csv --output runs/genesets
@@ -158,17 +185,25 @@ The optional `Broad_cell_wall_integrity` and `V_ATPase_vacuolar_acidification` d
 
 The analysis averages `log2(TPM+1)` within each isolate, retains genes with mean TPM at least 1 in at least two isolates and uses empirical Bayes moderated t statistics with weighted enrichment. It enumerates group assignments of the observed group sizes, giving 70 assignments for four versus four isolates. Benjamini-Hochberg correction is applied across primary sets separately for each test type. The implementation is Python; it does not call the R limma package.
 
-Majorbio Cloud performed full-library alignment, quantification and differential expression. Those platform steps require the provider's reference, counts, software versions and design. Local subsampled RNA counting is a separate analysis and does not regenerate the platform's DESeq2 results.
+Full-library expression analysis uses the Majorbio Cloud HISAT2/RSEM/DESeq2 workflow. Export its TPM, differential-expression and enrichment tables for the downstream gene-set and plotting commands.
+
+
+## Figure generation and platform results
+
+Install `plots/requirements.txt` for plotting, then follow [plots/README.md](plots/README.md). The commands draw integrated genomic panels, ANI panels, RNA PCA/volcano/NES panels, RMS matrices and gene-expression heatmaps. All measurements, clade labels, amino-acid states and Q matrices come from external inputs. `--flip-pc1` reproduces the manuscript's PCA display direction without changing variance fractions or distances. Figure layout scripts do not generate new biological results.
+
+For full-library RNA panels, supply the Majorbio Cloud differential-expression and GO/KEGG tables. Positive differential-expression values must represent clinical/37°C relative to nonclinical/28°C. The plotting commands use the supplied adjusted P values and enrichment statistics.
 
 ## Tests
 
 ```sh
 python -m unittest discover -s upstream -p "test_*.py"
 python -m unittest discover -s scripts -p "test_*.py"
+python -m unittest discover -s plots -p "test_*.py"
 ```
 
-Tests use generated synthetic records and temporary directories. They cover the custom filtering, counting and summary calculations. They do not install external tools or verify a full FASTQ-to-tree run.
+Tests use synthetic records in temporary directories. They cover filtering, coordinate inputs, candidate selection, CDS splicing and translation, counting, statistics, command construction and figure export.
 
 ## Public sequencing records
 
-WGS reads are deposited under [BioProject PRJNA1559921](https://www.ncbi.nlm.nih.gov/bioproject/PRJNA1559921). RNA-seq records are under [GEO GSE354876](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE354876). Use the manuscript's supplementary tables for sample-to-accession mappings and study inputs.
+Draft assemblies are available in [Zenodo](https://doi.org/10.5281/zenodo.24494290). WGS reads are deposited under [BioProject PRJNA1559921](https://www.ncbi.nlm.nih.gov/bioproject/PRJNA1559921). RNA-seq records are under [GEO GSE354876](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE354876). Use the manuscript's supplementary tables for sample-to-accession mappings and study inputs.

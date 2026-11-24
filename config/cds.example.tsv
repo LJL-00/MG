@@ -1,0 +1,3 @@
+sample	fasta	vcf	vcf_sample
+example_01	../inputs/example_01.reference_coordinates.fasta.gz	../inputs/example_01.filtered.vcf.gz	example_01
+example_02	../inputs/example_02.reference_coordinates.fasta.gz	../inputs/example_02.filtered.vcf.gz	example_02

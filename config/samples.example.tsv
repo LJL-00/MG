@@ -1,4 +1,4 @@
-sample	r1	r2	analysis_set	assemble	enabled
-example_01	../raw/example_01_R1.fastq.gz	../raw/example_01_R2.fastq.gz	Main	1	1
-example_02	../raw/example_02_R1.fastq.gz	../raw/example_02_R2.fastq.gz	Main	1	1
-example_03	../raw/example_03_R1.fastq.gz	../raw/example_03_R2.fastq.gz	ANI assessment	1	1
+sample	r1	r2	analysis_set	assemble	enabled	batch	batch_kmers
+example_01	../raw/example_01_R1.fastq.gz	../raw/example_01_R2.fastq.gz	Main	1	1	example_batch	21,33,55,77,99
+example_02	../raw/example_02_R1.fastq.gz	../raw/example_02_R2.fastq.gz	Main	1	1	example_batch	21,33,55,77,99
+example_03	../raw/example_03_R1.fastq.gz	../raw/example_03_R2.fastq.gz	ANI assessment	1	1	example_batch	21,33,55,77,99
