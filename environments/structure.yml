@@ -1,0 +1,7 @@
+name: mg-structure
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  # Not listed in the server inventory. Retained from the study record.
+  - structure=2.3.4

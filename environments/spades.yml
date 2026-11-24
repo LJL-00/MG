@@ -1,0 +1,6 @@
+name: mg-spades
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - spades=4.2.0

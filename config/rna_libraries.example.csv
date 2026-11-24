@@ -1,0 +1,5 @@
+unit,isolate,source_group,temperature_C,read1,read2
+example_A_1,example_A,group_A,28,../raw/example_A_1_R1.fastq.gz,../raw/example_A_1_R2.fastq.gz
+example_A_2,example_A,group_A,28,../raw/example_A_2_R1.fastq.gz,../raw/example_A_2_R2.fastq.gz
+example_B_1,example_B,group_B,28,../raw/example_B_1_R1.fastq.gz,../raw/example_B_1_R2.fastq.gz
+example_B_2,example_B,group_B,28,../raw/example_B_2_R1.fastq.gz,../raw/example_B_2_R2.fastq.gz
